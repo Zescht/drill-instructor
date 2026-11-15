@@ -6,9 +6,10 @@ Flow: pick a drill → **Start** → 3 s → "Two body, one head. Low ready." �
 
 ## Use it
 
-1. Open the GitHub Pages link in Safari on the iPhone (online, once). Wait until the pill says **Voice model: ready** (41 MB, stored on the phone).
-2. Share → **Add to Home Screen**. From then on it works offline.
-3. Allow microphone access when asked.
+1. Open the GitHub Pages link on the iPhone (Chrome, Firefox or Safari).
+2. Share → **Add to Home Screen**, and always start it from that icon (offline use only works there).
+3. Open it once online and wait until the pill says **Voice model: ready** (41 MB, stored on the phone).
+4. Allow microphone access when asked.
 
 ## Test panel
 
