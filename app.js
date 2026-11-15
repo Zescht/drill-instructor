@@ -460,9 +460,13 @@ function recStateText(r) {
   return `✓ ${fmtDur(s.duration)} · ${s.detections.length} spikes${shots}`;
 }
 
+let playerUrls = [];
+
 function renderRecList() {
   const list = $('rec-list');
   list.innerHTML = '';
+  for (const u of playerUrls) URL.revokeObjectURL(u);
+  playerUrls = [];
   for (const r of RECORDINGS) {
     const s = samples[r.id];
     const active = recording && recording.id === r.id;
@@ -471,6 +475,7 @@ function renderRecList() {
     card.innerHTML = `
       <div class="rec-head"><b></b><span class="rec-state"></span></div>
       <ol></ol>
+      <audio controls preload="metadata" hidden></audio>
       <label class="rec-shots" hidden>Shots fired in this recording
         <input type="number" min="0" inputmode="numeric" placeholder="e.g. 12">
       </label>
@@ -484,6 +489,15 @@ function renderRecList() {
     const state = card.querySelector('.rec-state');
     state.textContent = recStateText(r);
     recStateEls[r.id] = state;
+
+    // Replay
+    const player = card.querySelector('audio');
+    if (s && !active) {
+      const url = URL.createObjectURL(s.blob);
+      playerUrls.push(url);
+      player.src = url;
+      player.hidden = false;
+    }
 
     const shotsBox = card.querySelector('.rec-shots');
     const shotsInput = shotsBox.querySelector('input');
@@ -509,9 +523,28 @@ function renderRecList() {
   $('btn-rec-share').disabled = !!recording || !RECORDINGS.some((r) => samples[r.id]);
 }
 
+// Mic Mode: a website cannot read the iPhone setting, so the user confirms it.
+// If the browser ever reports voice isolation on the track, warn automatically.
+function checkVoiceIsolation() {
+  const tr = stream && stream.getAudioTracks()[0];
+  const s = tr && tr.getSettings ? tr.getSettings() : {};
+  const on = s.voiceIsolation === true;
+  $('micmode-warn').hidden = !on;
+  if (on) $('micmode-warn').textContent = 'The browser reports that voice isolation is ON. Switch Mic Mode to Wide Spectrum.';
+  return on;
+}
+
+function refreshMicModeBox() {
+  const ok = !!settings.micModeOk;
+  $('micmode-ok').checked = ok;
+  document.querySelector('.micmode').classList.toggle('ok', ok);
+}
+
 async function startRecording(r) {
   if (recording) return;
   try { await ensureAudio(); } catch (e) { log('Audio/microphone failed: ' + e); alert('Microphone not available: ' + e); return; }
+  if (checkVoiceIsolation() && !confirm('Voice isolation is ON, which filters out shots. Record anyway?')) return;
+  if (!settings.micModeOk && !confirm('You have not confirmed that Mic Mode is set to "Wide Spectrum" (see the box above). Record anyway?')) return;
   if (samples[r.id] && !confirm(`Replace the existing "${r.title}" recording?`)) return;
   recording = { id: r.id, chunks: [], detections: [], maxPeak: 0, startTime: ctx.currentTime };
   updateForward();
@@ -548,6 +581,7 @@ function stopRecording() {
     mic: tr ? tr.label : '',
     micSettings: tr && tr.getSettings ? tr.getSettings() : {},
     detector: { thrDb: settings.thrDb, ratio: settings.ratio, lockMs: settings.lockMs },
+    micModeConfirmedWideSpectrum: !!settings.micModeOk,
   };
   samples[rec.id] = s;
   sampleDb.set(rec.id, s).catch((e) => log('Save failed: ' + e));
@@ -599,6 +633,7 @@ function shareSamples(which) {
     recordings: list.map((s) => ({
       file: sampleFileName(s), id: s.id, date: s.date, durationSec: +s.duration.toFixed(2), sampleRate: s.sampleRate,
       shotsFired: s.shots, maxPeakDb: s.maxPeakDb, mic: s.mic, micSettings: s.micSettings,
+      micModeConfirmedWideSpectrum: s.micModeConfirmedWideSpectrum,
       detectorAtRecording: s.detector, detectedSpikes: s.detections,
     })),
   };
@@ -628,6 +663,7 @@ function downloadFiles(files) {
 
 async function openRecordScreen() {
   showScreen('record');
+  refreshMicModeBox();
   await loadSamples();
   renderRecList();
 }
@@ -751,6 +787,18 @@ $('btn-rec-clear').onclick = async () => {
   renderRecList();
 };
 $('rec-note').onchange = () => sampleDb.set('note', $('rec-note').value).catch(() => {});
+$('btn-mic-on').onclick = async () => {
+  try {
+    await ensureAudio();
+    $('btn-mic-on').textContent = 'Microphone is on ✓';
+    checkVoiceIsolation();
+  } catch (e) { alert('Microphone not available: ' + e); }
+};
+$('micmode-ok').onchange = () => {
+  settings.micModeOk = $('micmode-ok').checked;
+  save('vi-settings', settings);
+  refreshMicModeBox();
+};
 $('btn-copy-log').onclick = async () => {
   try { await navigator.clipboard.writeText(logEl.value); log('(log copied)'); }
   catch { logEl.select(); document.execCommand('copy'); }
