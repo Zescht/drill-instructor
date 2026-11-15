@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Drill Instructor</title>
+  <meta name="theme-color" content="#111418">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Drill VI">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Drill Instructor</h1>
+    <span id="model-status" class="pill">Voice model: not loaded</span>
+  </header>
+
+  <!-- Drill selection -->
+  <main id="screen-menu" class="screen">
+    <h2>Drills</h2>
+    <div id="drill-list"></div>
+    <p class="hint">Install: in Safari tap Share → "Add to Home Screen". Open it once online so the voice model (41 MB) is stored for offline use.</p>
+  </main>
+
+  <!-- Running a drill -->
+  <main id="screen-drill" class="screen" hidden>
+    <h2 id="drill-title"></h2>
+
+    <div id="display">
+      <div id="status">Press Start</div>
+      <div id="shot-count"></div>
+    </div>
+
+    <div id="result" hidden>
+      <div class="total"><span id="res-total">0.00</span><small>s</small></div>
+      <div class="line">First shot <b id="res-first"></b></div>
+      <div class="line">Splits <b id="res-splits"></b></div>
+    </div>
+
+    <div class="buttons">
+      <button id="btn-start" class="big primary">Start</button>
+      <button id="btn-ready" class="big" hidden>Ready (tap)</button>
+      <button id="btn-again" class="big primary" hidden>Again</button>
+      <button id="btn-menu" class="big" hidden>Menu</button>
+    </div>
+    <div class="buttons small-row">
+      <button id="btn-reset">Reset drill</button>
+      <button id="btn-end">End drill</button>
+    </div>
+
+    <details id="test-panel" open>
+      <summary>Test panel</summary>
+
+      <div class="meter-wrap">
+        <div id="meter"><div id="meter-bar"></div><div id="meter-floor"></div><div id="meter-thr"></div></div>
+        <div class="meter-labels"><span>-60 dB</span><span id="meter-val">–</span><span>0 dB</span></div>
+      </div>
+
+      <label>Shot threshold: <b id="thr-val"></b>
+        <input id="thr" type="range" min="-50" max="-3" step="1">
+      </label>
+      <label>Must be above background by: <b id="ratio-val"></b>
+        <input id="ratio" type="range" min="1" max="20" step="1">
+      </label>
+      <label>Ignore after a shot (ms): <b id="lock-val"></b>
+        <input id="lock" type="range" min="20" max="300" step="10">
+      </label>
+      <label>"Ready" detection
+        <select id="ready-mode">
+          <option value="vosk">Speech: word "ready" (offline model)</option>
+          <option value="voice">Any voice (fallback)</option>
+          <option value="tap">Tap only</option>
+        </select>
+      </label>
+      <label class="check"><input id="ready-partial" type="checkbox"> React on partial "ready" (faster, more false triggers)</label>
+      <label>Latency correction (ms, subtracted from times)
+        <input id="latency" type="number" step="5">
+      </label>
+
+      <div class="buttons small-row">
+        <button id="btn-shot-test">Start shot test</button>
+        <button id="btn-copy-log">Copy log</button>
+        <button id="btn-clear-log">Clear log</button>
+      </div>
+      <ol id="shot-test-list"></ol>
+      <div id="mic-info" class="hint"></div>
+      <textarea id="log" readonly rows="10"></textarea>
+    </details>
+  </main>
+
+  <script src="vendor/vosk.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
