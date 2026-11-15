@@ -135,18 +135,28 @@ function pushDetectorSettings() {
 function onWorklet(m) {
   if (m.type === 'meter') onMeter(m);
   else if (m.type === 'shot') onShot(m);
-  else if (m.type === 'audio' && recognizer) recognizer.acceptWaveformFloat(m.data, ctx.sampleRate);
+  else if (m.type === 'audio') {
+    if (recording) recording.chunks.push(m.data);
+    if (recognizer) recognizer.acceptWaveformFloat(m.data, ctx.sampleRate);
+  }
 }
 
+// Raw audio is forwarded from the worklet while the recognizer listens or a sample is recorded.
+function updateForward() { setDetector({ forward: !!(recognizer || recording) }); }
+
+const meterPct = (db) => Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+
 function onMeter(m) {
-  const pct = (db) => Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
   const peakDb = toDb(m.peak);
-  const bar = $('meter-bar');
-  bar.style.width = pct(peakDb) + '%';
-  bar.classList.toggle('hot', peakDb >= settings.thrDb);
-  $('meter-floor').style.left = pct(toDb(m.floor)) + '%';
-  $('meter-thr').style.left = pct(settings.thrDb) + '%';
-  $('meter-val').textContent = `peak ${peakDb.toFixed(0)} dB · bg ${toDb(m.floor).toFixed(0)} dB`;
+  for (const w of document.querySelectorAll('.meter-wrap')) {
+    const bar = w.querySelector('.meter-bar');
+    bar.style.width = meterPct(peakDb) + '%';
+    bar.classList.toggle('hot', peakDb >= settings.thrDb);
+    w.querySelector('.meter-floor').style.left = meterPct(toDb(m.floor)) + '%';
+    w.querySelector('.meter-thr').style.left = meterPct(settings.thrDb) + '%';
+    w.querySelector('.meter-val').textContent = `peak ${peakDb.toFixed(0)} dB · bg ${toDb(m.floor).toFixed(0)} dB`;
+  }
+  if (recording && m.peak > recording.maxPeak) recording.maxPeak = m.peak;
 
   // "Any voice" fallback: about 250 ms of sound clearly above the background
   if (run && run.voiceCheck) {
@@ -157,6 +167,10 @@ function onMeter(m) {
 }
 
 function onShot(m) {
+  if (recording) {
+    recording.detections.push({ t: +(m.time - recording.startTime).toFixed(3), peakDb: +toDb(m.peak).toFixed(1), bgDb: +toDb(m.floor).toFixed(1) });
+    return;
+  }
   if (shotTest.active) {
     shotTest.times.push(m.time);
     const n = shotTest.times.length;
@@ -211,12 +225,12 @@ function startRecognizer(onReady) {
     if (settings.readyPartial && /\bready\b/.test(p)) { log(`heard (partial): "${p}"`); onReady('voice "ready" (partial)'); }
   });
   recognizer = rec;
-  setDetector({ forward: true });
+  updateForward();
 }
 
 function stopRecognizer() {
-  setDetector({ forward: false });
   if (recognizer) { try { recognizer.remove(); } catch { /* ignore */ } recognizer = null; }
+  updateForward();
 }
 
 // ---------- Drill run ----------
@@ -335,7 +349,7 @@ function abortRun() {
   }
   stopAllAudio();
   stopRecognizer();
-  setDetector({ armed: false, forward: false });
+  setDetector({ armed: false });
 }
 
 // ---------- Shot test (free counting, outside a drill) ----------
@@ -358,6 +372,266 @@ function stopShotTest() {
   log(`--- Shot test stopped (${shotTest.times.length} shots)`);
 }
 
+// ---------- Sample recording (guided) ----------
+const RECORDINGS = [
+  {
+    id: 'single', title: '1. Single shots', maxSec: 60, askShots: true,
+    steps: [
+      'Stand at your normal shooting position, rifle ready, AirPods on.',
+      'Press Record, then stay still and quiet for 2 seconds.',
+      'Fire 10 to 15 single shots at your target, about 2 seconds apart.',
+      'Wait 2 seconds after the last shot, then press Stop.',
+      'Enter how many shots you fired.',
+    ],
+  },
+  {
+    id: 'strings', title: '2. Fast strings', maxSec: 60, askShots: true,
+    steps: [
+      'Same position as before. Press Record, wait 2 seconds.',
+      'Fire 3 to 4 strings like in your drills: doubles and triples, as fast as you normally shoot.',
+      'Leave about 3 seconds between strings.',
+      'Wait 2 seconds, press Stop, and enter the total number of shots.',
+    ],
+  },
+  {
+    id: 'noise', title: '3. Everything that is NOT a shot', maxSec: 90, askShots: false,
+    steps: [
+      'Do NOT fire in this recording.',
+      'Say "ready" a few times, talk normally, cough or clear your throat.',
+      'Do a magazine change, pull the charging handle, tap the rifle, put it down and pick it up.',
+      'Walk a few steps, rustle your clothing, move the way you move between drills.',
+      'Add any other sounds typical for your shooting place.',
+    ],
+  },
+  {
+    id: 'quiet', title: '4. Quiet background', maxSec: 20, askShots: false,
+    steps: [
+      'Stand still and stay quiet for about 15 seconds (it stops by itself after 20).',
+      'This captures the normal background sound of the place.',
+    ],
+  },
+];
+
+// Tiny IndexedDB store so recordings survive closing the app.
+const sampleDb = (() => {
+  let dbp = null;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('drill-vi-samples', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('samples');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+  const tx = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction('samples', mode);
+      const req = fn(t.objectStore('samples'));
+      t.oncomplete = () => res(req && req.result);
+      t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    get: (k) => tx('readonly', (s) => s.get(k)),
+    set: (k, v) => tx('readwrite', (s) => s.put(v, k)),
+    clear: () => tx('readwrite', (s) => s.clear()),
+  };
+})();
+
+const samples = {};      // id -> saved recording (kept in memory so sharing works directly from a tap)
+let recording = null;    // the recording in progress
+const recStateEls = {};
+
+async function loadSamples() {
+  for (const r of RECORDINGS) {
+    try { const s = await sampleDb.get(r.id); if (s) samples[r.id] = s; } catch (e) { log('Could not load sample: ' + e); }
+  }
+  try { $('rec-note').value = (await sampleDb.get('note')) || ''; } catch { /* ignore */ }
+}
+
+function fmtDur(sec) { const s = Math.round(sec); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+function recStateText(r) {
+  if (recording && recording.id === r.id) {
+    return `● REC ${fmtDur(ctx.currentTime - recording.startTime)} / ${fmtDur(r.maxSec)} · ${recording.detections.length} spikes`;
+  }
+  const s = samples[r.id];
+  if (!s) return 'not recorded yet';
+  const shots = r.askShots ? (s.shots != null ? ` · ${s.shots} shots fired` : ' · enter shots fired!') : '';
+  return `✓ ${fmtDur(s.duration)} · ${s.detections.length} spikes${shots}`;
+}
+
+function renderRecList() {
+  const list = $('rec-list');
+  list.innerHTML = '';
+  for (const r of RECORDINGS) {
+    const s = samples[r.id];
+    const active = recording && recording.id === r.id;
+    const card = document.createElement('div');
+    card.className = 'rec-card' + (active ? ' active' : s ? ' done' : '');
+    card.innerHTML = `
+      <div class="rec-head"><b></b><span class="rec-state"></span></div>
+      <ol></ol>
+      <label class="rec-shots" hidden>Shots fired in this recording
+        <input type="number" min="0" inputmode="numeric" placeholder="e.g. 12">
+      </label>
+      <div class="buttons small-row"><button class="rec-btn"></button><button class="rec-send">Send this one</button></div>`;
+    card.querySelector('b').textContent = r.title;
+    for (const step of r.steps) {
+      const li = document.createElement('li');
+      li.textContent = step;
+      card.querySelector('ol').appendChild(li);
+    }
+    const state = card.querySelector('.rec-state');
+    state.textContent = recStateText(r);
+    recStateEls[r.id] = state;
+
+    const shotsBox = card.querySelector('.rec-shots');
+    const shotsInput = shotsBox.querySelector('input');
+    shotsBox.hidden = !(r.askShots && s && !active);
+    if (s && s.shots != null) shotsInput.value = s.shots;
+    shotsInput.onchange = () => {
+      s.shots = shotsInput.value === '' ? null : Math.max(0, Math.round(+shotsInput.value));
+      sampleDb.set(r.id, s).catch((e) => log('Save failed: ' + e));
+      state.textContent = recStateText(r);
+    };
+
+    const btn = card.querySelector('.rec-btn');
+    btn.textContent = active ? 'Stop' : s ? 'Redo' : 'Record';
+    btn.disabled = !!recording && !active;
+    btn.onclick = () => (active ? stopRecording() : startRecording(r));
+
+    const send = card.querySelector('.rec-send');
+    send.disabled = !s || active;
+    send.onclick = () => shareSamples([r]);
+
+    list.appendChild(card);
+  }
+  $('btn-rec-share').disabled = !!recording || !RECORDINGS.some((r) => samples[r.id]);
+}
+
+async function startRecording(r) {
+  if (recording) return;
+  try { await ensureAudio(); } catch (e) { log('Audio/microphone failed: ' + e); alert('Microphone not available: ' + e); return; }
+  if (samples[r.id] && !confirm(`Replace the existing "${r.title}" recording?`)) return;
+  recording = { id: r.id, chunks: [], detections: [], maxPeak: 0, startTime: ctx.currentTime };
+  updateForward();
+  setDetector({ armed: true }); // log what the current detector would count (for comparison)
+  requestWakeLock();
+  recording.tick = setInterval(() => {
+    if (!recording) return;
+    recStateEls[r.id].textContent = recStateText(r);
+    if (ctx.currentTime - recording.startTime >= r.maxSec) stopRecording();
+  }, 250);
+  log(`--- Recording "${r.id}" started`);
+  renderRecList();
+}
+
+function stopRecording() {
+  const rec = recording;
+  if (!rec) return;
+  recording = null;
+  clearInterval(rec.tick);
+  updateForward();
+  setDetector({ armed: false });
+  const r = RECORDINGS.find((x) => x.id === rec.id);
+  const blob = encodeWav(rec.chunks, ctx.sampleRate);
+  const tr = stream && stream.getAudioTracks()[0];
+  const s = {
+    id: rec.id,
+    blob,
+    date: new Date().toISOString(),
+    duration: rec.chunks.reduce((a, c) => a + c.length, 0) / ctx.sampleRate,
+    sampleRate: ctx.sampleRate,
+    maxPeakDb: +toDb(rec.maxPeak).toFixed(1),
+    detections: rec.detections,
+    shots: null, // entered by the user after the recording
+    mic: tr ? tr.label : '',
+    micSettings: tr && tr.getSettings ? tr.getSettings() : {},
+    detector: { thrDb: settings.thrDb, ratio: settings.ratio, lockMs: settings.lockMs },
+  };
+  samples[rec.id] = s;
+  sampleDb.set(rec.id, s).catch((e) => log('Save failed: ' + e));
+  log(`--- Recording "${rec.id}" stopped: ${s.duration.toFixed(1)} s, ${s.detections.length} spikes, max ${s.maxPeakDb} dB`);
+  renderRecList();
+  if (r.askShots) {
+    const input = $('rec-list').querySelectorAll('.rec-card')[RECORDINGS.indexOf(r)].querySelector('.rec-shots input');
+    input.focus();
+  }
+}
+
+function encodeWav(chunks, sampleRate) {
+  const n = chunks.reduce((a, c) => a + c.length, 0);
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (const c of chunks) {
+    for (let i = 0; i < c.length; i++) {
+      const x = Math.max(-1, Math.min(1, c[i]));
+      v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+      o += 2;
+    }
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+function sampleFileName(s) {
+  const d = s.date.slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+  const shots = s.shots != null ? `_${s.shots}shots` : '';
+  return `${s.id}${shots}_${d}.wav`;
+}
+
+function shareSamples(which) {
+  const list = which.map((r) => samples[r.id]).filter(Boolean);
+  if (!list.length) return;
+  const missing = list.filter((s) => RECORDINGS.find((r) => r.id === s.id).askShots && s.shots == null);
+  if (missing.length && !confirm('The number of shots fired is missing for: ' + missing.map((s) => s.id).join(', ') + '. Send anyway?')) return;
+
+  const info = {
+    app: 'drill-instructor',
+    created: new Date().toISOString(),
+    note: $('rec-note').value,
+    userAgent: navigator.userAgent,
+    recordings: list.map((s) => ({
+      file: sampleFileName(s), id: s.id, date: s.date, durationSec: +s.duration.toFixed(2), sampleRate: s.sampleRate,
+      shotsFired: s.shots, maxPeakDb: s.maxPeakDb, mic: s.mic, micSettings: s.micSettings,
+      detectorAtRecording: s.detector, detectedSpikes: s.detections,
+    })),
+  };
+  const files = list.map((s) => new File([s.blob], sampleFileName(s), { type: 'audio/wav' }));
+  files.push(new File([JSON.stringify(info, null, 2)], 'samples-info.txt', { type: 'text/plain' }));
+
+  if (navigator.canShare && navigator.canShare({ files })) {
+    navigator.share({ files, title: 'Drill Instructor samples' }).catch((e) => {
+      if (e.name !== 'AbortError') { log('Share failed: ' + e); downloadFiles(files); }
+    });
+  } else {
+    downloadFiles(files);
+  }
+}
+
+function downloadFiles(files) {
+  for (const f of files) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f);
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  }
+}
+
+async function openRecordScreen() {
+  showScreen('record');
+  await loadSamples();
+  renderRecList();
+}
+
 // ---------- Wake lock ----------
 let wakeLock = null;
 async function requestWakeLock() {
@@ -376,7 +650,9 @@ document.addEventListener('visibilitychange', () => {
 function showScreen(name) {
   $('screen-menu').hidden = name !== 'menu';
   $('screen-drill').hidden = name !== 'drill';
+  $('screen-record').hidden = name !== 'record';
   if (name === 'menu') renderMenu();
+  window.scrollTo(0, 0);
 }
 
 function renderMenu() {
@@ -441,7 +717,7 @@ function bindSettings() {
     $('thr-val').textContent = `${settings.thrDb} dB`;
     $('ratio-val').textContent = `×${settings.ratio} (${(20 * Math.log10(settings.ratio)).toFixed(0)} dB)`;
     $('lock-val').textContent = settings.lockMs;
-    $('meter-thr').style.left = Math.max(0, Math.min(100, ((settings.thrDb + 60) / 60) * 100)) + '%';
+    for (const el of document.querySelectorAll('.meter-thr')) el.style.left = meterPct(settings.thrDb) + '%';
   };
   const changed = () => { save('vi-settings', settings); pushDetectorSettings(); refresh(); };
 
@@ -463,6 +739,18 @@ $('btn-reset').onclick = () => { abortRun(); showIdle(); };
 $('btn-end').onclick = () => { abortRun(); if (shotTest.active) stopShotTest(); showScreen('menu'); };
 $('btn-shot-test').onclick = () => (shotTest.active ? stopShotTest() : startShotTest());
 $('btn-clear-log').onclick = () => { logEl.value = ''; };
+
+$('btn-open-record').onclick = () => openRecordScreen();
+$('btn-rec-back').onclick = () => { stopRecording(); showScreen('menu'); };
+$('btn-rec-share').onclick = () => shareSamples(RECORDINGS);
+$('btn-rec-clear').onclick = async () => {
+  if (recording || !confirm('Delete all recordings from this phone?')) return;
+  await sampleDb.clear().catch((e) => log('Delete failed: ' + e));
+  for (const k of Object.keys(samples)) delete samples[k];
+  $('rec-note').value = '';
+  renderRecList();
+};
+$('rec-note').onchange = () => sampleDb.set('note', $('rec-note').value).catch(() => {});
 $('btn-copy-log').onclick = async () => {
   try { await navigator.clipboard.writeText(logEl.value); log('(log copied)'); }
   catch { logEl.select(); document.execCommand('copy'); }

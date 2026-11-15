@@ -24,6 +24,11 @@
   <main id="screen-menu" class="screen">
     <h2>Drills</h2>
     <div id="drill-list"></div>
+    <h2>Tools</h2>
+    <button id="btn-open-record" class="drill-card">
+      <b>Record samples</b>
+      <span>Guided recordings of your gun, used to tune shot detection</span>
+    </button>
     <p class="hint">Install: in Safari tap Share → "Add to Home Screen". Open it once online so the voice model (41 MB) is stored for offline use.</p>
   </main>
 
@@ -57,8 +62,8 @@
       <summary>Test panel</summary>
 
       <div class="meter-wrap">
-        <div id="meter"><div id="meter-bar"></div><div id="meter-floor"></div><div id="meter-thr"></div></div>
-        <div class="meter-labels"><span>-60 dB</span><span id="meter-val">–</span><span>0 dB</span></div>
+        <div class="meter"><div class="meter-bar"></div><div class="meter-floor"></div><div class="meter-thr"></div></div>
+        <div class="meter-labels"><span>-60 dB</span><span class="meter-val">–</span><span>0 dB</span></div>
       </div>
 
       <label>Shot threshold: <b id="thr-val"></b>
@@ -91,6 +96,45 @@
       <div id="mic-info" class="hint"></div>
       <textarea id="log" readonly rows="10"></textarea>
     </details>
+  </main>
+
+  <!-- Guided sample recording -->
+  <main id="screen-record" class="screen" hidden>
+    <h2>Record samples</h2>
+    <p class="hint">Four short recordings of your gun and your shooting place. They let Claude teach the app what <em>your</em> shot sounds like, and what is not a shot. Recordings are kept on this phone until you delete them.</p>
+
+    <details class="tips" open>
+      <summary>Before you start: how to make good recordings</summary>
+      <ul>
+        <li><b>Real conditions:</b> record at the place where you will shoot, with the same rifle, target and distance.</li>
+        <li><b>Same microphone as in drills:</b> connect and wear your AirPods <em>before</em> pressing Record, exactly as during a drill. The phone stays where it will be during drills (pocket, pouch, table).</li>
+        <li><b>Don't touch the phone</b> while recording, and don't cover the AirPods.</li>
+        <li><b>Silence at both ends:</b> wait 2 seconds after pressing Record before the first sound, and 2 seconds after the last sound before pressing Stop.</li>
+        <li><b>Full gas and full magazine.</b> A gun low on gas sounds different. If you had to refill during a recording, mention it in the note.</li>
+        <li><b>Count your shots</b> and enter the number after the recording. That number is the "answer key" for the tuning.</li>
+        <li><b>One recording per step.</b> If something goes wrong, press Redo.</li>
+      </ul>
+    </details>
+
+    <div class="meter-wrap">
+      <div class="meter"><div class="meter-bar"></div><div class="meter-floor"></div><div class="meter-thr"></div></div>
+      <div class="meter-labels"><span>-60 dB</span><span class="meter-val">–</span><span>0 dB</span></div>
+    </div>
+
+    <div id="rec-list"></div>
+
+    <label class="note">Note for Claude (optional: gun, gas, place, anything unusual)
+      <textarea id="rec-note" rows="3"></textarea>
+    </label>
+
+    <div class="buttons">
+      <button id="btn-rec-share" class="big primary">Send all recordings</button>
+    </div>
+    <p class="hint">"Send" opens the iPhone share sheet. Easiest: save to your Google Drive (or email them to yourself) and tell Claude where they are. All four files together are about 20 MB.</p>
+    <div class="buttons small-row">
+      <button id="btn-rec-back">Back to menu</button>
+      <button id="btn-rec-clear">Delete all recordings</button>
+    </div>
   </main>
 
   <script src="vendor/vosk.js"></script>
