@@ -42,14 +42,39 @@ function log(msg) {
 
 // ---------- Audio setup ----------
 let ctx = null, stream = null, srcNode = null, node = null, workletLoaded = false;
+let audioBroken = false; // set when the mic stopped delivering audio; the next tap rebuilds everything
 const buffers = {};
 const playing = new Set();
 
+// iOS pauses ("interrupts") the AudioContext and can mute the mic when other audio takes over:
+// replaying a recording, the share sheet, a call, Siri... Such a context often never comes back.
+function audioIsHealthy() {
+  const tr = stream && stream.getAudioTracks()[0];
+  return ctx && ctx.state === 'running' && tr && tr.readyState === 'live' && !tr.muted && !audioBroken;
+}
+
+function teardownAudio(reason) {
+  log(`Audio restarted (${reason})`);
+  try { if (srcNode) srcNode.disconnect(); } catch { /* ignore */ }
+  try { if (node) node.disconnect(); } catch { /* ignore */ }
+  if (stream) for (const t of stream.getTracks()) t.stop();
+  try { ctx.close(); } catch { /* ignore */ }
+  ctx = null; stream = null; srcNode = null; node = null; workletLoaded = false; audioBroken = false;
+  playing.clear();
+}
+
 async function ensureAudio() {
   // Called directly from a tap: create/resume the AudioContext before any await (iOS requirement).
+  for (const a of document.querySelectorAll('audio')) a.pause(); // replay players take over the audio session
+  if (ctx && !audioIsHealthy()) {
+    const tr = stream && stream.getAudioTracks()[0];
+    teardownAudio(`context ${ctx.state}, mic ${tr ? (tr.muted ? 'muted' : tr.readyState) : 'none'}${audioBroken ? ', no audio data' : ''}`);
+  }
+  try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch { /* iOS 17+ only */ }
   if (!ctx) {
-    try { if (navigator.audioSession) navigator.audioSession.type = 'play-and-record'; } catch { /* iOS 17+ only */ }
     ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const c = ctx;
+    ctx.onstatechange = () => log(`Audio context: ${c.state}`);
   }
   const resumed = ctx.resume();
 
@@ -64,6 +89,10 @@ async function ensureAudio() {
       await ctx.audioWorklet.addModule('shot-worklet.js');
       workletLoaded = true;
     }
+    const tr = stream.getAudioTracks()[0];
+    tr.onended = () => { audioBroken = true; log('Microphone ended'); };
+    tr.onmute = () => log('Microphone muted by the phone');
+    tr.onunmute = () => log('Microphone unmuted');
     srcNode = ctx.createMediaStreamSource(stream);
     node = new AudioWorkletNode(ctx, 'shot-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
     node.port.onmessage = (e) => onWorklet(e.data);
@@ -72,7 +101,12 @@ async function ensureAudio() {
     pushDetectorSettings();
     describeMic();
   }
-  await resumed;
+  // An interrupted context can leave resume() pending forever: don't wait more than 2 s.
+  await Promise.race([resumed, new Promise((r) => setTimeout(r, 2000))]);
+  if (ctx.state !== 'running') {
+    audioBroken = true;
+    throw new Error(`audio is paused by the phone (state: ${ctx.state}). Tap again.`);
+  }
   await loadClips();
 }
 
@@ -136,7 +170,11 @@ function onWorklet(m) {
   if (m.type === 'meter') onMeter(m);
   else if (m.type === 'shot') onShot(m);
   else if (m.type === 'audio') {
-    if (recording) recording.chunks.push(m.data);
+    if (recording) {
+      recording.chunks.push(m.data);
+      recording.samples += m.data.length;
+      recording.lastData = performance.now();
+    }
     if (recognizer) recognizer.acceptWaveformFloat(m.data, ctx.sampleRate);
   }
 }
@@ -453,7 +491,7 @@ function fmtDur(sec) { const s = Math.round(sec); return `${Math.floor(s / 60)}:
 
 function recStateText(r) {
   if (recording && recording.id === r.id) {
-    return `● REC ${fmtDur(ctx.currentTime - recording.startTime)} / ${fmtDur(r.maxSec)} · ${recording.detections.length} spikes`;
+    return `● REC ${fmtDur(recording.samples / ctx.sampleRate)} / ${fmtDur(r.maxSec)} · ${recording.detections.length} spikes`;
   }
   const s = samples[r.id];
   if (!s) return 'not recorded yet';
@@ -581,14 +619,27 @@ async function startRecording(r) {
   if ((checkVoiceIsolation() || settings.micMode === 'voice') && !confirm('Voice Isolation filters out shots. Record anyway?')) return;
   if (!settings.micMode && !confirm('You have not selected which Mic Mode is set (see the box above). Record anyway?')) return;
   if (samples[r.id] && !confirm(`Replace the existing "${r.title}" recording?`)) return;
-  recording = { id: r.id, chunks: [], detections: [], maxPeak: 0, startTime: ctx.currentTime };
+  recording = { id: r.id, chunks: [], samples: 0, detections: [], maxPeak: 0, startTime: ctx.currentTime, lastData: performance.now() };
   updateForward();
   setDetector({ armed: true }); // log what the current detector would count (for comparison)
   requestWakeLock();
   recording.tick = setInterval(() => {
     if (!recording) return;
     recStateEls[r.id].textContent = recStateText(r);
-    if (ctx.currentTime - recording.startTime >= r.maxSec) stopRecording();
+    if (recording.samples / ctx.sampleRate >= r.maxSec) { stopRecording(); return; }
+    // Watchdog: the mic delivers a block about every 0.1 s. Nothing for 2 s means iOS paused the audio.
+    if (performance.now() - recording.lastData > 2000) {
+      audioBroken = true;
+      const had = recording.samples / ctx.sampleRate;
+      log(`Recording "${r.id}": no audio from the microphone for 2 s (context ${ctx.state})`);
+      if (had >= 1) {
+        stopRecording();
+        alert(`The microphone stopped after ${had.toFixed(1)} s (the phone paused the audio). The part before was kept. Tap Redo to record again.`);
+      } else {
+        abortRecording();
+        alert('No sound arrived from the microphone (the phone paused the audio). Tap Record again: the app restarts the audio.');
+      }
+    }
   }, 250);
   log(`--- Recording "${r.id}" started`);
   renderRecList();
