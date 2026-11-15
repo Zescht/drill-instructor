@@ -730,12 +730,26 @@ function sampleFileName(s) {
 const RELAY = 'https://ntfy.sh/dvi805beb89e8121fc77539d6b4';
 const sending = new Set(); // ids being uploaded right now
 
+const PIECE_BYTES = 1800000; // the relay rejects files above ~2 MB (HTTP 413)
+
 async function relayPut(name, blob) {
   const res = await fetch(`${RELAY}?filename=${encodeURIComponent(name)}`, { method: 'PUT', body: blob, cache: 'no-store' });
   if (!res.ok) {
+    if (res.status === 413 || res.status === 429) throw new Error(`the relay's limit was reached (${res.status}). Try again in an hour.`);
     let msg = '';
     try { msg = (await res.json()).error || ''; } catch { /* ignore */ }
     throw new Error(`upload error ${res.status} ${msg}`.trim());
+  }
+}
+
+// Big files go in pieces "<name>.part01of04"; the collector joins them again.
+async function relaySend(name, blob, onProgress) {
+  const n = Math.ceil(blob.size / PIECE_BYTES);
+  if (n <= 1) return relayPut(name, blob);
+  for (let i = 0; i < n; i++) {
+    if (onProgress) onProgress(i + 1, n);
+    const tag = `.part${String(i + 1).padStart(2, '0')}of${String(n).padStart(2, '0')}`;
+    await relayPut(name + tag, blob.slice(i * PIECE_BYTES, (i + 1) * PIECE_BYTES));
   }
 }
 
@@ -767,7 +781,9 @@ async function sendSamples(which) {
     s.sendError = null;
     try {
       const folder = `${s.date.slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}_${s.id}`;
-      await relayPut(`${folder}__${sampleFileName(s)}`, s.blob);
+      await relaySend(`${folder}__${sampleFileName(s)}`, s.blob, (i, n) => {
+        if (recStateEls[r.id]) recStateEls[r.id].textContent = recStateText(r) + ` ${i}/${n}`;
+      });
       await relayPut(`${folder}__info.json`, new Blob([JSON.stringify(sampleInfo(s), null, 2)], { type: 'application/json' }));
       s.sentAt = new Date().toISOString();
       await sampleDb.set(r.id, s).catch(() => {});
