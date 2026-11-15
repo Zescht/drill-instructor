@@ -458,7 +458,8 @@ function recStateText(r) {
   const s = samples[r.id];
   if (!s) return 'not recorded yet';
   const shots = r.askShots ? (s.shots != null ? ` · ${s.shots} shots fired` : ' · enter shots fired!') : '';
-  return `✓ ${fmtDur(s.duration)} · ${s.detections.length} spikes${shots}`;
+  const sent = sending.has(r.id) ? ' · sending…' : s.sentAt ? ' · sent to Claude ✓' : ' · not sent';
+  return `✓ ${fmtDur(s.duration)} · ${s.detections.length} spikes${shots}${sent}`;
 }
 
 let playerUrls = [];
@@ -480,6 +481,7 @@ function renderRecList() {
       <label class="rec-shots" hidden>Shots fired in this recording
         <input type="number" min="0" inputmode="numeric" placeholder="e.g. 12">
       </label>
+      <div class="warn rec-err" hidden></div>
       <div class="buttons small-row rec-actions"></div>`;
     card.querySelector('b').textContent = r.title;
     for (const step of r.steps) {
@@ -506,9 +508,16 @@ function renderRecList() {
     if (s && s.shots != null) shotsInput.value = s.shots;
     shotsInput.onchange = () => {
       s.shots = shotsInput.value === '' ? null : Math.max(0, Math.round(+shotsInput.value));
+      s.sentAt = null; // changed after sending: needs sending again
       sampleDb.set(r.id, s).catch((e) => log('Save failed: ' + e));
-      state.textContent = recStateText(r);
+      renderRecList();
     };
+
+    const err = card.querySelector('.rec-err');
+    if (s && s.sendError && !sending.has(r.id)) {
+      err.hidden = false;
+      err.textContent = 'Not sent: ' + s.sendError;
+    }
 
     // Buttons: recording -> Stop / Abort; recorded -> Redo / Send / Delete; empty -> Record
     const actions = card.querySelector('.rec-actions');
@@ -519,13 +528,13 @@ function renderRecList() {
       b.onclick = fn;
       actions.appendChild(b);
     };
-    const busy = !!recording && !active; // another card is recording
+    const busy = (!!recording && !active) || sending.size > 0; // another card is recording, or an upload runs
     if (active) {
       addBtn('Stop & keep', () => stopRecording());
       addBtn('Abort', () => abortRecording());
     } else if (s) {
       addBtn('Redo', () => startRecording(r), busy);
-      addBtn('Send this one', () => shareSamples([r]), busy);
+      addBtn(sending.has(r.id) ? 'Sending…' : s.sentAt ? 'Send again' : 'Send this one', () => sendSamples([r]), busy);
       addBtn('Delete', () => deleteSample(r), busy);
     } else {
       addBtn('Record', () => startRecording(r), busy);
@@ -533,7 +542,10 @@ function renderRecList() {
 
     list.appendChild(card);
   }
-  $('btn-rec-share').disabled = !!recording || !RECORDINGS.some((r) => samples[r.id]);
+  const unsent = RECORDINGS.filter((r) => samples[r.id] && !samples[r.id].sentAt);
+  const shareBtn = $('btn-rec-share');
+  shareBtn.disabled = !!recording || sending.size > 0 || !unsent.length;
+  shareBtn.textContent = sending.size ? 'Sending…' : unsent.length ? `Send ${unsent.length === 1 ? 'the unsent recording' : `all ${unsent.length} unsent recordings`}` : 'Everything is sent ✓';
 }
 
 // Mic Mode: a website cannot read the iPhone setting, so the user confirms it.
@@ -661,51 +673,134 @@ function sampleFileName(s) {
   return `${s.id}${shots}_${d}.wav`;
 }
 
-function shareSamples(which) {
-  const list = which.map((r) => samples[r.id]).filter(Boolean);
-  if (!list.length) return;
-  const missing = list.filter((s) => RECORDINGS.find((r) => r.id === s.id).askShots && s.shots == null);
-  if (missing.length && !confirm('The number of shots fired is missing for: ' + missing.map((s) => s.id).join(', ') + '. Send anyway?')) return;
+// ---------- Send to Claude: upload into the private GitHub repo ----------
+// The upload key (fine-grained token, only for that repo) is stored on this phone only.
+const UPLOAD_REPO = 'Zescht/drill-samples';
+const TOKEN_KEY = 'vi-upload-token';
+const sending = new Set(); // ids being uploaded right now
 
-  const info = {
+function getToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
+function setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } }
+
+function ghApi(path, opts = {}, token = getToken()) {
+  return fetch(`https://api.github.com/repos/${UPLOAD_REPO}${path}`, {
+    ...opts,
+    cache: 'no-store',
+    headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+  });
+}
+
+async function ghError(res) {
+  if (res.status === 401) return 'upload key is wrong or expired. Set it up again.';
+  if (res.status === 403 || res.status === 404) return 'upload key has no write access to drill-samples (check repository and "Contents: Read and write").';
+  let msg = '';
+  try { msg = (await res.json()).message || ''; } catch { /* ignore */ }
+  return `GitHub error ${res.status} ${msg}`;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+    fr.onerror = () => reject(fr.error);
+    fr.readAsDataURL(blob);
+  });
+}
+
+// Create the file, or overwrite it if it already exists (resend).
+async function putFile(path, base64, message) {
+  const body = { message, content: base64 };
+  let res = await ghApi('/contents/' + path, { method: 'PUT', body: JSON.stringify(body) });
+  if (res.status === 422 || res.status === 409) {
+    const cur = await ghApi('/contents/' + path);
+    if (cur.ok) {
+      body.sha = (await cur.json()).sha;
+      res = await ghApi('/contents/' + path, { method: 'PUT', body: JSON.stringify(body) });
+    }
+  }
+  if (!res.ok) throw new Error(await ghError(res));
+}
+
+function sampleInfo(s) {
+  return {
     app: 'drill-instructor',
-    created: new Date().toISOString(),
+    sent: new Date().toISOString(),
     note: $('rec-note').value,
     userAgent: navigator.userAgent,
-    recordings: list.map((s) => ({
-      file: sampleFileName(s), id: s.id, date: s.date, durationSec: +s.duration.toFixed(2), sampleRate: s.sampleRate,
-      shotsFired: s.shots, maxPeakDb: s.maxPeakDb, mic: s.mic, micSettings: s.micSettings,
-      micMode: s.micMode || 'not selected',
-      detectorAtRecording: s.detector, detectedSpikes: s.detections,
-    })),
+    file: sampleFileName(s), id: s.id, date: s.date, durationSec: +s.duration.toFixed(2), sampleRate: s.sampleRate,
+    wavBytes: s.blob ? s.blob.size : 0,
+    shotsFired: s.shots, maxPeakDb: s.maxPeakDb, mic: s.mic, micSettings: s.micSettings,
+    micMode: s.micMode || 'not selected',
+    detectorAtRecording: s.detector, detectedSpikes: s.detections,
   };
-  const files = list.map((s) => new File([s.blob], sampleFileName(s), { type: 'audio/wav' }));
-  files.push(new File([JSON.stringify(info, null, 2)], 'samples-info.txt', { type: 'text/plain' }));
+}
 
-  if (navigator.canShare && navigator.canShare({ files })) {
-    navigator.share({ files, title: 'Drill Instructor samples' }).catch((e) => {
-      if (e.name !== 'AbortError') { log('Share failed: ' + e); downloadFiles(files); }
-    });
-  } else {
-    downloadFiles(files);
+async function sendSamples(which) {
+  if (sending.size) return;
+  if (!getToken()) {
+    alert('Sending needs a one-time setup first: see the box "Send to Claude" on this page.');
+    $('upload-box').scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+  const list = which.filter((r) => samples[r.id]);
+  if (!list.length) return;
+  const missing = list.filter((r) => r.askShots && samples[r.id].shots == null);
+  if (missing.length && !confirm('The number of shots fired is missing for: ' + missing.map((r) => r.title).join(', ') + '. Send anyway?')) return;
+
+  for (const r of list) sending.add(r.id);
+  renderRecList();
+  for (const r of list) {
+    const s = samples[r.id];
+    s.sendError = null;
+    try {
+      const folder = `samples/${s.date.slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}_${s.id}`;
+      await putFile(`${folder}/${sampleFileName(s)}`, await blobToBase64(s.blob), `${r.title}: recording`);
+      await putFile(`${folder}/info.json`, await blobToBase64(new Blob([JSON.stringify(sampleInfo(s), null, 2)])), `${r.title}: info`);
+      s.sentAt = new Date().toISOString();
+      await sampleDb.set(r.id, s).catch(() => {});
+      log(`--- Sent "${s.id}" to ${folder}`);
+    } catch (e) {
+      s.sendError = e.message === 'Failed to fetch' || e.message === 'Load failed' ? 'no internet connection. Try again.' : e.message;
+      log(`Send "${s.id}" failed: ${s.sendError}`);
+    }
+    sending.delete(r.id);
+    renderRecList();
   }
 }
 
-function downloadFiles(files) {
-  for (const f of files) {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(f);
-    a.download = f.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+function refreshUploadBox() {
+  const has = !!getToken();
+  $('upload-box').classList.toggle('ok', has);
+  $('upload-setup').hidden = has;
+  $('upload-connected').hidden = !has;
+  $('upload-status').textContent = has
+    ? 'Connected ✓ "Send" uploads directly to Claude. Nothing else to do.'
+    : 'Not set up yet. Do this once (about 2 minutes), then every "Send" goes straight to Claude.';
+}
+
+async function saveToken() {
+  const t = $('upload-token').value.trim();
+  if (!t) return;
+  const btn = $('btn-token-save');
+  btn.disabled = true;
+  btn.textContent = 'Checking…';
+  try {
+    const res = await ghApi('', {}, t);
+    if (!res.ok) throw new Error(await ghError(res));
+    setToken(t);
+    $('upload-token').value = '';
+    refreshUploadBox();
+  } catch (e) {
+    alert('This key does not work: ' + (e.message === 'Failed to fetch' || e.message === 'Load failed' ? 'no internet connection.' : e.message));
   }
+  btn.disabled = false;
+  btn.textContent = 'Save key';
 }
 
 async function openRecordScreen() {
   showScreen('record');
   refreshMicModeBox();
+  refreshUploadBox();
   await loadSamples();
   renderRecList();
 }
@@ -824,7 +919,13 @@ $('btn-rec-back').onclick = () => {
   abortRecording();
   showScreen('menu');
 };
-$('btn-rec-share').onclick = () => shareSamples(RECORDINGS);
+$('btn-rec-share').onclick = () => sendSamples(RECORDINGS.filter((r) => samples[r.id] && !samples[r.id].sentAt));
+$('btn-token-save').onclick = () => saveToken();
+$('btn-token-remove').onclick = () => {
+  if (!confirm('Remove the upload key from this phone? Sending stops working until you set it up again.')) return;
+  setToken('');
+  refreshUploadBox();
+};
 $('btn-rec-clear').onclick = async () => {
   if (recording || !confirm('Delete all recordings from this phone?')) return;
   await sampleDb.clear().catch((e) => log('Delete failed: ' + e));
