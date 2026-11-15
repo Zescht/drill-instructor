@@ -724,52 +724,19 @@ function sampleFileName(s) {
   return `${s.id}${shots}_${d}.wav`;
 }
 
-// ---------- Send to Claude: upload into the private GitHub repo ----------
-// The upload key (fine-grained token, only for that repo) is stored on this phone only.
-const UPLOAD_REPO = 'Zescht/drill-samples';
-const TOKEN_KEY = 'vi-upload-token';
+// ---------- Send to Claude ----------
+// No login: each file goes to the ntfy.sh relay (keeps files 3 hours). A job in the private
+// repo Zescht/drill-samples collects them every hour (tools/collect.py there).
+const RELAY = 'https://ntfy.sh/dvi805beb89e8121fc77539d6b4';
 const sending = new Set(); // ids being uploaded right now
 
-function getToken() { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } }
-function setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch { /* ignore */ } }
-
-function ghApi(path, opts = {}, token = getToken()) {
-  return fetch(`https://api.github.com/repos/${UPLOAD_REPO}${path}`, {
-    ...opts,
-    cache: 'no-store',
-    headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-  });
-}
-
-async function ghError(res) {
-  if (res.status === 401) return 'upload key is wrong or expired. Set it up again.';
-  if (res.status === 403 || res.status === 404) return 'upload key has no write access to drill-samples (check repository and "Contents: Read and write").';
-  let msg = '';
-  try { msg = (await res.json()).message || ''; } catch { /* ignore */ }
-  return `GitHub error ${res.status} ${msg}`;
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
-    fr.onerror = () => reject(fr.error);
-    fr.readAsDataURL(blob);
-  });
-}
-
-// Create the file, or overwrite it if it already exists (resend).
-async function putFile(path, base64, message) {
-  const body = { message, content: base64 };
-  let res = await ghApi('/contents/' + path, { method: 'PUT', body: JSON.stringify(body) });
-  if (res.status === 422 || res.status === 409) {
-    const cur = await ghApi('/contents/' + path);
-    if (cur.ok) {
-      body.sha = (await cur.json()).sha;
-      res = await ghApi('/contents/' + path, { method: 'PUT', body: JSON.stringify(body) });
-    }
+async function relayPut(name, blob) {
+  const res = await fetch(`${RELAY}?filename=${encodeURIComponent(name)}`, { method: 'PUT', body: blob, cache: 'no-store' });
+  if (!res.ok) {
+    let msg = '';
+    try { msg = (await res.json()).error || ''; } catch { /* ignore */ }
+    throw new Error(`upload error ${res.status} ${msg}`.trim());
   }
-  if (!res.ok) throw new Error(await ghError(res));
 }
 
 function sampleInfo(s) {
@@ -788,11 +755,6 @@ function sampleInfo(s) {
 
 async function sendSamples(which) {
   if (sending.size) return;
-  if (!getToken()) {
-    alert('Sending needs a one-time setup first: see the box "Send to Claude" on this page.');
-    $('upload-box').scrollIntoView({ behavior: 'smooth' });
-    return;
-  }
   const list = which.filter((r) => samples[r.id]);
   if (!list.length) return;
   const missing = list.filter((r) => r.askShots && samples[r.id].shots == null);
@@ -804,12 +766,12 @@ async function sendSamples(which) {
     const s = samples[r.id];
     s.sendError = null;
     try {
-      const folder = `samples/${s.date.slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}_${s.id}`;
-      await putFile(`${folder}/${sampleFileName(s)}`, await blobToBase64(s.blob), `${r.title}: recording`);
-      await putFile(`${folder}/info.json`, await blobToBase64(new Blob([JSON.stringify(sampleInfo(s), null, 2)])), `${r.title}: info`);
+      const folder = `${s.date.slice(0, 19).replace(/[-:]/g, '').replace('T', '-')}_${s.id}`;
+      await relayPut(`${folder}__${sampleFileName(s)}`, s.blob);
+      await relayPut(`${folder}__info.json`, new Blob([JSON.stringify(sampleInfo(s), null, 2)], { type: 'application/json' }));
       s.sentAt = new Date().toISOString();
       await sampleDb.set(r.id, s).catch(() => {});
-      log(`--- Sent "${s.id}" to ${folder}`);
+      log(`--- Sent "${s.id}" (${folder})`);
     } catch (e) {
       s.sendError = e.message === 'Failed to fetch' || e.message === 'Load failed' ? 'no internet connection. Try again.' : e.message;
       log(`Send "${s.id}" failed: ${s.sendError}`);
@@ -819,39 +781,9 @@ async function sendSamples(which) {
   }
 }
 
-function refreshUploadBox() {
-  const has = !!getToken();
-  $('upload-box').classList.toggle('ok', has);
-  $('upload-setup').hidden = has;
-  $('upload-connected').hidden = !has;
-  $('upload-status').textContent = has
-    ? 'Connected ✓ "Send" uploads directly to Claude. Nothing else to do.'
-    : 'Not set up yet. Do this once (about 2 minutes), then every "Send" goes straight to Claude.';
-}
-
-async function saveToken() {
-  const t = $('upload-token').value.trim();
-  if (!t) return;
-  const btn = $('btn-token-save');
-  btn.disabled = true;
-  btn.textContent = 'Checking…';
-  try {
-    const res = await ghApi('', {}, t);
-    if (!res.ok) throw new Error(await ghError(res));
-    setToken(t);
-    $('upload-token').value = '';
-    refreshUploadBox();
-  } catch (e) {
-    alert('This key does not work: ' + (e.message === 'Failed to fetch' || e.message === 'Load failed' ? 'no internet connection.' : e.message));
-  }
-  btn.disabled = false;
-  btn.textContent = 'Save key';
-}
-
 async function openRecordScreen() {
   showScreen('record');
   refreshMicModeBox();
-  refreshUploadBox();
   await loadSamples();
   renderRecList();
 }
@@ -971,12 +903,6 @@ $('btn-rec-back').onclick = () => {
   showScreen('menu');
 };
 $('btn-rec-share').onclick = () => sendSamples(RECORDINGS.filter((r) => samples[r.id] && !samples[r.id].sentAt));
-$('btn-token-save').onclick = () => saveToken();
-$('btn-token-remove').onclick = () => {
-  if (!confirm('Remove the upload key from this phone? Sending stops working until you set it up again.')) return;
-  setToken('');
-  refreshUploadBox();
-};
 $('btn-rec-clear').onclick = async () => {
   if (recording || !confirm('Delete all recordings from this phone?')) return;
   await sampleDb.clear().catch((e) => log('Delete failed: ' + e));

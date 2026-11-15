@@ -138,28 +138,6 @@
       <div id="micmode-warn" class="warn" hidden></div>
     </div>
 
-    <div id="upload-box" class="micmode">
-      <b>Send to Claude</b>
-      <p class="hint" id="upload-status"></p>
-      <div id="upload-setup">
-        <ol>
-          <li>Tap <b>Create upload key</b>. GitHub opens (log in as Zescht if asked). Name, expiry (1 year) and the permission are already filled in.</li>
-          <li>Under <b>Repository access</b> choose <b>Only select repositories</b> and pick <b>drill-samples</b>.</li>
-          <li>Check that <b>Contents</b> says <b>Read and write</b>. Scroll down and tap <b>Generate token</b>.</li>
-          <li>Copy the key (it starts with <code>github_pat_</code>), come back to this page, paste it below and tap <b>Save key</b>.</li>
-        </ol>
-        <div class="buttons small-row">
-          <a class="btn" href="https://github.com/settings/personal-access-tokens/new?name=Drill%20VI%20upload&amp;description=Uploads%20audio%20samples%20from%20the%20Drill%20Instructor%20app&amp;target_name=Zescht&amp;expires_in=366&amp;contents=write" target="_blank" rel="noopener">Create upload key</a>
-        </div>
-        <label>Upload key
-          <input id="upload-token" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" spellcheck="false">
-        </label>
-        <div class="buttons small-row"><button id="btn-token-save">Save key</button></div>
-        <p class="hint">The key only allows writing to your private repository "drill-samples" and is stored on this phone only.</p>
-      </div>
-      <div id="upload-connected" class="buttons small-row" hidden><button id="btn-token-remove">Remove key</button></div>
-    </div>
-
     <div class="meter-wrap">
       <div class="meter"><div class="meter-bar"></div><div class="meter-floor"></div><div class="meter-thr"></div></div>
       <div class="meter-labels"><span>-60 dB</span><span class="meter-val">–</span><span>0 dB</span></div>
@@ -174,7 +152,7 @@
     <div class="buttons">
       <button id="btn-rec-share" class="big primary">Send all recordings</button>
     </div>
-    <p class="hint">"Send" uploads straight to Claude (needs internet; best on Wi-Fi, a 1-minute recording is about 6 MB). Each card shows "sent to Claude ✓" when it arrived. Recordings stay on this phone until you delete them.</p>
+    <p class="hint">"Send" uploads straight to Claude. Nothing to set up, it just needs internet (a 1-minute recording is about 6 MB, Wi-Fi is best). Each card shows "sent to Claude ✓" when it went out. Recordings stay on this phone until you delete them.</p>
     <div class="buttons small-row">
       <button id="btn-rec-back">Back to menu</button>
       <button id="btn-rec-clear">Delete all recordings</button>
