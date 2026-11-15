@@ -165,7 +165,8 @@ label.note { margin-top: 16px; }
   padding: 14px;
 }
 .micmode ol { margin: 8px 0; padding-left: 20px; font-size: 14px; }
-.micmode label.check { display: flex; gap: 8px; align-items: center; margin-top: 12px; font-weight: 700; }
+.micmode label { display: block; margin-top: 12px; font-size: 14px; font-weight: 700; }
+.micmode.bad { border-color: var(--bad); }
 .micmode.ok { border-color: var(--good); }
 .warn { margin-top: 10px; color: var(--bad); font-weight: 700; font-size: 14px; }
 .rec-card audio { width: 100%; margin-top: 10px; }

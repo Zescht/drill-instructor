@@ -121,12 +121,20 @@
       <ol>
         <li>Tap <b>Turn on microphone</b> below (Mic Mode can only be changed while the mic is on).</li>
         <li>Swipe down from the top-right corner to open Control Center.</li>
-        <li>Tap <b>Mic Mode</b> at the top and choose <b>Wide Spectrum</b>.</li>
-        <li>Come back here and tick the box. The iPhone keeps this choice for this app.</li>
+        <li>Tap <b>Mic Mode</b> at the top and choose <b>Wide Spectrum</b>. If Wide Spectrum is greyed out, choose <b>Automatic</b>. Never Voice Isolation.</li>
+        <li>Come back here and select below what you chose. The iPhone keeps this choice for this app.</li>
       </ol>
-      <p class="hint">Why: "Voice Isolation" blocks everything that is not a voice, including your shots. "Automatic" can switch to Voice Isolation. "Wide Spectrum" leaves all sounds in. A website cannot read this setting, so the app asks you to confirm it. If Control Center shows no Mic Mode button, the iPhone is not applying a mode to this app: tick the box and continue.</p>
+      <p class="hint">Why: "Voice Isolation" blocks everything that is not a voice, including your shots. "Wide Spectrum" leaves all sounds in. "Automatic" is the next best. Wide Spectrum is greyed out in some situations (for example, iOS may treat a browser microphone like a call). A website cannot read this setting, so the app asks you, and your answer is sent along with the recordings.</p>
       <div class="buttons small-row"><button id="btn-mic-on">Turn on microphone</button></div>
-      <label class="check"><input id="micmode-ok" type="checkbox"> Wide Spectrum is selected</label>
+      <label>Mic Mode you selected
+        <select id="micmode-sel">
+          <option value="">– choose –</option>
+          <option value="wide">Wide Spectrum</option>
+          <option value="auto">Automatic (Wide Spectrum was greyed out)</option>
+          <option value="voice">Voice Isolation</option>
+          <option value="none">No Mic Mode button in Control Center</option>
+        </select>
+      </label>
       <div id="micmode-warn" class="warn" hidden></div>
     </div>
 

@@ -433,6 +433,7 @@ const sampleDb = (() => {
   return {
     get: (k) => tx('readonly', (s) => s.get(k)),
     set: (k, v) => tx('readwrite', (s) => s.put(v, k)),
+    del: (k) => tx('readwrite', (s) => s.delete(k)),
     clear: () => tx('readwrite', (s) => s.clear()),
   };
 })();
@@ -479,7 +480,7 @@ function renderRecList() {
       <label class="rec-shots" hidden>Shots fired in this recording
         <input type="number" min="0" inputmode="numeric" placeholder="e.g. 12">
       </label>
-      <div class="buttons small-row"><button class="rec-btn"></button><button class="rec-send">Send this one</button></div>`;
+      <div class="buttons small-row rec-actions"></div>`;
     card.querySelector('b').textContent = r.title;
     for (const step of r.steps) {
       const li = document.createElement('li');
@@ -509,14 +510,26 @@ function renderRecList() {
       state.textContent = recStateText(r);
     };
 
-    const btn = card.querySelector('.rec-btn');
-    btn.textContent = active ? 'Stop' : s ? 'Redo' : 'Record';
-    btn.disabled = !!recording && !active;
-    btn.onclick = () => (active ? stopRecording() : startRecording(r));
-
-    const send = card.querySelector('.rec-send');
-    send.disabled = !s || active;
-    send.onclick = () => shareSamples([r]);
+    // Buttons: recording -> Stop / Abort; recorded -> Redo / Send / Delete; empty -> Record
+    const actions = card.querySelector('.rec-actions');
+    const addBtn = (label, fn, disabled = false) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.disabled = disabled;
+      b.onclick = fn;
+      actions.appendChild(b);
+    };
+    const busy = !!recording && !active; // another card is recording
+    if (active) {
+      addBtn('Stop & keep', () => stopRecording());
+      addBtn('Abort', () => abortRecording());
+    } else if (s) {
+      addBtn('Redo', () => startRecording(r), busy);
+      addBtn('Send this one', () => shareSamples([r]), busy);
+      addBtn('Delete', () => deleteSample(r), busy);
+    } else {
+      addBtn('Record', () => startRecording(r), busy);
+    }
 
     list.appendChild(card);
   }
@@ -528,23 +541,33 @@ function renderRecList() {
 function checkVoiceIsolation() {
   const tr = stream && stream.getAudioTracks()[0];
   const s = tr && tr.getSettings ? tr.getSettings() : {};
-  const on = s.voiceIsolation === true;
-  $('micmode-warn').hidden = !on;
-  if (on) $('micmode-warn').textContent = 'The browser reports that voice isolation is ON. Switch Mic Mode to Wide Spectrum.';
-  return on;
+  return s.voiceIsolation === true;
 }
 
+const MIC_MODE_NAMES = { wide: 'Wide Spectrum', auto: 'Automatic', voice: 'Voice Isolation', none: 'no Mic Mode shown' };
+if (settings.micModeOk && !settings.micMode) settings.micMode = 'wide'; // from the earlier checkbox version
+
 function refreshMicModeBox() {
-  const ok = !!settings.micModeOk;
-  $('micmode-ok').checked = ok;
-  document.querySelector('.micmode').classList.toggle('ok', ok);
+  const mode = settings.micMode || '';
+  const reported = checkVoiceIsolation();
+  $('micmode-sel').value = mode;
+  const box = document.querySelector('.micmode');
+  const bad = mode === 'voice' || reported;
+  box.classList.toggle('ok', !!mode && !bad);
+  box.classList.toggle('bad', bad);
+  const warn = $('micmode-warn');
+  warn.hidden = !bad;
+  warn.textContent = reported
+    ? 'The browser reports that voice isolation is ON. Switch Mic Mode to Wide Spectrum or Automatic.'
+    : 'Voice Isolation filters out your shots. Please switch to Wide Spectrum, or Automatic if Wide Spectrum is greyed out.';
 }
 
 async function startRecording(r) {
   if (recording) return;
   try { await ensureAudio(); } catch (e) { log('Audio/microphone failed: ' + e); alert('Microphone not available: ' + e); return; }
-  if (checkVoiceIsolation() && !confirm('Voice isolation is ON, which filters out shots. Record anyway?')) return;
-  if (!settings.micModeOk && !confirm('You have not confirmed that Mic Mode is set to "Wide Spectrum" (see the box above). Record anyway?')) return;
+  refreshMicModeBox();
+  if ((checkVoiceIsolation() || settings.micMode === 'voice') && !confirm('Voice Isolation filters out shots. Record anyway?')) return;
+  if (!settings.micMode && !confirm('You have not selected which Mic Mode is set (see the box above). Record anyway?')) return;
   if (samples[r.id] && !confirm(`Replace the existing "${r.title}" recording?`)) return;
   recording = { id: r.id, chunks: [], detections: [], maxPeak: 0, startTime: ctx.currentTime };
   updateForward();
@@ -581,7 +604,7 @@ function stopRecording() {
     mic: tr ? tr.label : '',
     micSettings: tr && tr.getSettings ? tr.getSettings() : {},
     detector: { thrDb: settings.thrDb, ratio: settings.ratio, lockMs: settings.lockMs },
-    micModeConfirmedWideSpectrum: !!settings.micModeOk,
+    micMode: MIC_MODE_NAMES[settings.micMode] || 'not selected',
   };
   samples[rec.id] = s;
   sampleDb.set(rec.id, s).catch((e) => log('Save failed: ' + e));
@@ -591,6 +614,25 @@ function stopRecording() {
     const input = $('rec-list').querySelectorAll('.rec-card')[RECORDINGS.indexOf(r)].querySelector('.rec-shots input');
     input.focus();
   }
+}
+
+// Throw away the recording in progress; an earlier recording of the same step is kept.
+function abortRecording() {
+  const rec = recording;
+  if (!rec) return;
+  recording = null;
+  clearInterval(rec.tick);
+  updateForward();
+  setDetector({ armed: false });
+  log(`--- Recording "${rec.id}" aborted (discarded)`);
+  renderRecList();
+}
+
+async function deleteSample(r) {
+  if (!confirm(`Delete the "${r.title}" recording?`)) return;
+  delete samples[r.id];
+  await sampleDb.del(r.id).catch((e) => log('Delete failed: ' + e));
+  renderRecList();
 }
 
 function encodeWav(chunks, sampleRate) {
@@ -633,7 +675,7 @@ function shareSamples(which) {
     recordings: list.map((s) => ({
       file: sampleFileName(s), id: s.id, date: s.date, durationSec: +s.duration.toFixed(2), sampleRate: s.sampleRate,
       shotsFired: s.shots, maxPeakDb: s.maxPeakDb, mic: s.mic, micSettings: s.micSettings,
-      micModeConfirmedWideSpectrum: s.micModeConfirmedWideSpectrum,
+      micMode: s.micMode || 'not selected',
       detectorAtRecording: s.detector, detectedSpikes: s.detections,
     })),
   };
@@ -777,7 +819,11 @@ $('btn-shot-test').onclick = () => (shotTest.active ? stopShotTest() : startShot
 $('btn-clear-log').onclick = () => { logEl.value = ''; };
 
 $('btn-open-record').onclick = () => openRecordScreen();
-$('btn-rec-back').onclick = () => { stopRecording(); showScreen('menu'); };
+$('btn-rec-back').onclick = () => {
+  if (recording && !confirm('A recording is running. Leave and discard it?')) return;
+  abortRecording();
+  showScreen('menu');
+};
 $('btn-rec-share').onclick = () => shareSamples(RECORDINGS);
 $('btn-rec-clear').onclick = async () => {
   if (recording || !confirm('Delete all recordings from this phone?')) return;
@@ -791,11 +837,11 @@ $('btn-mic-on').onclick = async () => {
   try {
     await ensureAudio();
     $('btn-mic-on').textContent = 'Microphone is on ✓';
-    checkVoiceIsolation();
+    refreshMicModeBox();
   } catch (e) { alert('Microphone not available: ' + e); }
 };
-$('micmode-ok').onchange = () => {
-  settings.micModeOk = $('micmode-ok').checked;
+$('micmode-sel').onchange = () => {
+  settings.micMode = $('micmode-sel').value;
   save('vi-settings', settings);
   refreshMicModeBox();
 };
