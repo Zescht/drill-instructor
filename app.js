@@ -12,7 +12,7 @@ const PRE_DELAY_MS = 3000;     // silent pause after pressing Start
 const ANNOUNCE_GAP_MS = 800;   // pause between drill name and "Shooter ready?"
 const LISTEN_DELAY_MS = 150;   // start listening for "ready" this long after the prompt ends
 const MIN_DELAY = 1, MAX_DELAY = 4; // random delay after "Stand by" (USPSA 8.3.3)
-const BEEP_HZ = 2000, BEEP_SEC = 0.2; // placeholder beep
+const BEEP_HZ = 2000, BEEP_SEC = 0.4; // placeholder beep
 
 // ---------- Small helpers ----------
 const $ = (id) => document.getElementById(id);
