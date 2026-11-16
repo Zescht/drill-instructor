@@ -17,7 +17,10 @@
 <body>
   <header>
     <h1>Drill Instructor</h1>
-    <span id="model-status" class="pill">Voice model: not loaded</span>
+    <span class="pills">
+      <button id="btn-update" class="pill ok" hidden>Update ready – tap</button>
+      <span id="model-status" class="pill">Loading…</span>
+    </span>
   </header>
   <div id="mic-warn" class="warn" hidden></div>
 
@@ -153,7 +156,7 @@
     <div class="buttons">
       <button id="btn-rec-share" class="big primary">Send all recordings</button>
     </div>
-    <p class="hint">"Send" uploads straight to Claude. Nothing to set up, it just needs internet (a 1-minute recording is about 6 MB, Wi-Fi is best). Each card shows "sent to Claude ✓" when it went out. Recordings stay on this phone until you delete them.</p>
+    <p class="hint">"Send" uploads straight to Claude. Nothing to set up, it just needs internet (a 1-minute recording is about 6 MB, Wi-Fi is best). Each card shows "sent to Claude ✓" when it went out. If sending fails, "Download" saves the recording as a WAV file to your phone (Files app → Downloads); the shot count and settings are stored inside the file. Recordings stay in the app until you delete them.</p>
     <div class="buttons small-row">
       <button id="btn-rec-back">Back to menu</button>
       <button id="btn-rec-clear">Delete all recordings</button>

@@ -1,7 +1,9 @@
-﻿// Offline support. App files are cached on install.
-// Online: network first (so updates arrive). Offline: served from cache.
-// The voice model is NOT cached here: the Vosk worker stores it in IndexedDB itself.
-const CACHE = 'drill-vi-v12';
+﻿// Offline first. The app always runs from the copy stored on the phone, never from the network.
+// Updates: when online, the browser notices a new sw.js, downloads ALL files of the new version,
+// and only switches when every file arrived (all-or-nothing), so a bad connection can never
+// leave a half-updated app. The page then offers "Update ready - tap to restart".
+// The voice model is NOT stored here: the Vosk worker keeps it in IndexedDB itself.
+const CACHE = 'drill-vi-v13';
 const FILES = [
   './',
   'index.html',
@@ -18,7 +20,12 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' skips the browser's HTTP cache so all files belong to the same version.
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+      .then(() => self.skipWaiting()),
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -33,21 +40,17 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
   if (req.url.endsWith('.tar.gz')) return; // model: handled by the Vosk worker
+  e.respondWith(
+    caches.open(CACHE)
+      .then((c) => c.match(req, { ignoreSearch: true }))
+      .then((hit) => hit || fetch(req)),
+  );
+});
 
-  // Network first, but never wait more than 1.2 s on a bad connection: then use the stored copy
-  // (the network answer still updates the store in the background for next time).
-  const network = fetch(req).then((res) => {
-    if (res.ok) {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy));
-    }
-    return res;
-  });
-  e.waitUntil(network.catch(() => {}));
-  e.respondWith((async () => {
-    const cached = await caches.match(req, { ignoreSearch: true });
-    if (!cached) return network;
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(cached), 1200));
-    return Promise.race([network.catch(() => cached), timeout]);
-  })());
+// The page asks whether every app file is stored ("Offline ready" check).
+self.addEventListener('message', (e) => {
+  if (!e.data || e.data.type !== 'check' || !e.ports[0]) return;
+  caches.open(CACHE)
+    .then((c) => Promise.all(FILES.map((f) => c.match(f).then((hit) => (hit ? null : f)))))
+    .then((res) => e.ports[0].postMessage({ version: CACHE, missing: res.filter(Boolean) }));
 });

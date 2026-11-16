@@ -46,6 +46,8 @@ h2 { font-size: 20px; margin: 16px 0 12px; }
   white-space: nowrap;
 }
 .pill.ok { color: var(--good); border-color: var(--good); }
+.pills { display: flex; gap: 6px; align-items: center; }
+button.pill { background: none; font: inherit; font-size: 12px; }
 .pill.err { color: var(--bad); border-color: var(--bad); }
 
 .hint { color: var(--muted); font-size: 13px; }

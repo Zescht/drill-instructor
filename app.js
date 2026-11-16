@@ -240,20 +240,51 @@ let model = null, recognizer = null;
 async function loadModel() {
   const pill = $('model-status');
   if (!window.Vosk) { pill.textContent = 'Voice model: library missing'; pill.className = 'pill err'; return; }
-  pill.textContent = 'Voice model: loading…';
+  pill.textContent = 'Loading voice model…';
   const t0 = performance.now();
   try {
-    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+    // Ask the phone not to delete the stored app and voice model when space gets low.
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persist().then((ok) => log(`Protected storage: ${ok ? 'granted' : 'not granted (iPhone may delete it when space is low)'}`)).catch(() => {});
+    }
     model = await Vosk.createModel(MODEL_URL);
-    pill.textContent = 'Voice model: ready';
-    pill.className = 'pill ok';
     log(`Voice model ready in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
     listenForStart(); // in case a drill is already open
+    refreshOfflinePill();
   } catch (e) {
-    pill.textContent = 'Voice model: failed';
+    pill.textContent = 'Voice model failed: needs internet once';
     pill.className = 'pill err';
     log('Voice model failed: ' + (e && e.message ? e.message : e));
   }
+}
+
+// "Offline ready" = the voice model is stored AND every app file is stored by the service worker.
+function askServiceWorker() {
+  return new Promise((resolve) => {
+    const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (!sw) { resolve(null); return; }
+    const ch = new MessageChannel();
+    ch.port1.onmessage = (e) => resolve(e.data);
+    sw.postMessage({ type: 'check' }, [ch.port2]);
+    setTimeout(() => resolve(null), 3000);
+  });
+}
+
+let offlineTimer = null;
+async function refreshOfflinePill() {
+  clearTimeout(offlineTimer);
+  if (!model) return;
+  const pill = $('model-status');
+  const st = await askServiceWorker();
+  if (st && !st.missing.length) {
+    pill.textContent = 'Offline ready ✓';
+    pill.className = 'pill ok';
+    log(`Offline ready (app ${st.version}, voice model stored)`);
+    return;
+  }
+  pill.textContent = st ? `Storing app files… (${st.missing.length} left)` : 'Storing app files…';
+  pill.className = 'pill';
+  offlineTimer = setTimeout(refreshOfflinePill, 2000);
 }
 
 // The recognizer only chooses between the given word and "something else" ([unk]):
@@ -598,7 +629,8 @@ function renderRecList() {
       addBtn('Abort', () => abortRecording());
     } else if (s) {
       addBtn('Redo', () => startRecording(r), busy);
-      addBtn(sending.has(r.id) ? 'Sending…' : s.sentAt ? 'Send again' : 'Send this one', () => sendSamples([r]), busy);
+      addBtn(sending.has(r.id) ? 'Sending…' : s.sentAt ? 'Send again' : 'Send', () => sendSamples([r]), busy);
+      addBtn('Download', () => downloadSample(r), busy);
       addBtn('Delete', () => deleteSample(r), busy);
     } else {
       addBtn('Record', () => startRecording(r), busy);
@@ -793,6 +825,40 @@ function sampleInfo(s) {
   };
 }
 
+// Fallback when sending fails: save the recording as a WAV file on the phone (Files app).
+// WAV keeps the full sound quality (MP3 would remove detail the tuning needs). The info
+// (shots fired, Mic Mode, note, ...) is stored inside the file as a comment, so nothing gets lost.
+async function wavWithInfo(wavBlob, text) {
+  const wav = new Uint8Array(await wavBlob.arrayBuffer());
+  const txt = new TextEncoder().encode(text);
+  const icmtLen = txt.length + 1;            // text + terminating zero
+  const listLen = 4 + 8 + icmtLen + (icmtLen % 2);
+  const out = new Uint8Array(wav.length + 8 + listLen); // zero-filled: covers terminator and padding
+  out.set(wav);
+  const v = new DataView(out.buffer);
+  let o = wav.length;
+  const tag = (s) => { for (let i = 0; i < 4; i++) out[o++] = s.charCodeAt(i); };
+  tag('LIST'); v.setUint32(o, listLen, true); o += 4; tag('INFO');
+  tag('ICMT'); v.setUint32(o, icmtLen, true); o += 4;
+  out.set(txt, o);
+  v.setUint32(4, out.length - 8, true); // RIFF size
+  return new Blob([out], { type: 'audio/wav' });
+}
+
+async function downloadSample(r) {
+  const s = samples[r.id];
+  if (!s) return;
+  const blob = await wavWithInfo(s.blob, JSON.stringify(sampleInfo(s)));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = sampleFileName(s);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  log(`Downloaded "${s.id}" as ${a.download} (${blob.size} bytes)`);
+}
+
 async function sendSamples(which) {
   if (sending.size) return;
   const list = which.filter((r) => samples[r.id]);
@@ -978,5 +1044,17 @@ showScreen('menu');
 loadModel();
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').catch((e) => log('Service worker failed: ' + e));
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then((reg) => reg.update().catch(() => {})) // look for a new version (silently fails offline)
+    .catch((e) => log('Service worker failed: ' + e));
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    refreshOfflinePill();
+    // A complete new version was stored. Not switched in the middle of a drill or recording.
+    if (hadController) { $('btn-update').hidden = false; log('Update stored: tap "Update ready" to use it'); }
+  });
 }
+$('btn-update').onclick = () => {
+  if ((run && run.phase !== 'done') || recording) { alert('Finish the drill or recording first.'); return; }
+  location.reload();
+};
