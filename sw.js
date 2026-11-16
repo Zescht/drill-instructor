@@ -1,7 +1,7 @@
 ﻿// Offline support. App files are cached on install.
 // Online: network first (so updates arrive). Offline: served from cache.
 // The voice model is NOT cached here: the Vosk worker stores it in IndexedDB itself.
-const CACHE = 'drill-vi-v10';
+const CACHE = 'drill-vi-v11';
 const FILES = [
   './',
   'index.html',

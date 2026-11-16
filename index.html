@@ -19,6 +19,7 @@
     <h1>Drill Instructor</h1>
     <span id="model-status" class="pill">Voice model: not loaded</span>
   </header>
+  <div id="mic-warn" class="warn" hidden></div>
 
   <!-- Drill selection -->
   <main id="screen-menu" class="screen">
@@ -77,7 +78,7 @@
       </label>
       <label>"Ready" detection
         <select id="ready-mode">
-          <option value="vosk">Speech: word "ready" (offline model)</option>
+          <option value="vosk">Speech: words "start" and "ready" (offline model)</option>
           <option value="voice">Any voice (fallback)</option>
           <option value="tap">Tap only</option>
         </select>
@@ -107,8 +108,8 @@
       <summary>Before you start: how to make good recordings</summary>
       <ul>
         <li><b>Real conditions:</b> record at the place where you will shoot, with the same rifle, target and distance.</li>
-        <li><b>Same microphone as in drills:</b> connect and wear your AirPods <em>before</em> pressing Record, exactly as during a drill. The phone stays where it will be during drills (pocket, pouch, table).</li>
-        <li><b>Don't touch the phone</b> while recording, and don't cover the AirPods.</li>
+        <li><b>iPhone microphone, no headphones:</b> disconnect AirPods and other Bluetooth headphones. Put the phone where it will be during drills (for example on the table next to you) and keep that place the same every time.</li>
+        <li><b>Don't touch or cover the phone</b> while recording (the microphone is at the bottom edge).</li>
         <li><b>Silence at both ends:</b> wait 2 seconds after pressing Record before the first sound, and 2 seconds after the last sound before pressing Stop.</li>
         <li><b>Full gas and full magazine.</b> A gun low on gas sounds different. If you had to refill during a recording, mention it in the note.</li>
         <li><b>Count your shots</b> and enter the number after the recording. That number is the "answer key" for the tuning.</li>

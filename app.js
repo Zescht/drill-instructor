@@ -118,6 +118,10 @@ function describeMic() {
     `baseLatency ${Math.round((ctx.baseLatency || 0) * 1000)} ms outputLatency ${Math.round((ctx.outputLatency || 0) * 1000)} ms`;
   $('mic-info').textContent = info;
   log(info);
+  // The app is meant for the iPhone's own microphone; Bluetooth mics change the sound and add delay.
+  const bt = /airpods|bluetooth|headset|beats|hands-?free/i.test(tr.label || '');
+  $('mic-warn').hidden = !bt;
+  $('mic-warn').textContent = bt ? `Headphone microphone in use (${tr.label}). Disconnect your AirPods/Bluetooth headphones so the iPhone's own microphone is used, then reopen the drill.` : '';
 }
 
 async function loadClips() {
@@ -244,6 +248,7 @@ async function loadModel() {
     pill.textContent = 'Voice model: ready';
     pill.className = 'pill ok';
     log(`Voice model ready in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+    listenForStart(); // in case a drill is already open
   } catch (e) {
     pill.textContent = 'Voice model: failed';
     pill.className = 'pill err';
@@ -251,19 +256,36 @@ async function loadModel() {
   }
 }
 
-function startRecognizer(onReady) {
-  const rec = new model.KaldiRecognizer(ctx.sampleRate, JSON.stringify(['ready', '[unk]']));
+// The recognizer only chooses between the given word and "something else" ([unk]):
+// that keeps it fast and hard to fool. Each phase listens for its own word.
+function startRecognizer(word, onHeard) {
+  stopRecognizer();
+  const rec = new model.KaldiRecognizer(ctx.sampleRate, JSON.stringify([word, '[unk]']));
+  const re = new RegExp(`\\b${word}\\b`);
   rec.on('result', (msg) => {
     const text = (msg.result && msg.result.text) || '';
     if (text) log(`heard (final): "${text}"`);
-    if (/\bready\b/.test(text)) onReady('voice "ready"');
+    if (re.test(text)) onHeard(`voice "${word}"`);
   });
   rec.on('partialresult', (msg) => {
     const p = (msg.result && msg.result.partial) || '';
-    if (settings.readyPartial && /\bready\b/.test(p)) { log(`heard (partial): "${p}"`); onReady('voice "ready" (partial)'); }
+    if (settings.readyPartial && re.test(p)) { log(`heard (partial): "${p}"`); onHeard(`voice "${word}" (partial)`); }
   });
   recognizer = rec;
   updateForward();
+}
+
+// On the drill screen (before a run and after a result) the app listens for "start".
+function listenForStart() {
+  if (settings.readyMode !== 'vosk' || !model || !audioIsHealthy() || $('screen-drill').hidden) return;
+  if ((run && run.phase !== 'done') || shotTest.active) return;
+  startRecognizer('start', (how) => {
+    if ($('screen-drill').hidden || (run && run.phase !== 'done') || shotTest.active) return;
+    log(`Start via ${how}`);
+    abortRun();
+    startRun();
+  });
+  if (!run) setStatus('Say "start" or press Start');
 }
 
 function stopRecognizer() {
@@ -295,7 +317,7 @@ function waitForReady(r) {
     $('btn-ready').hidden = false;
 
     if (settings.readyMode === 'vosk') {
-      if (model) startRecognizer(done);
+      if (model) startRecognizer('ready', done);
       else log('Voice model not ready yet: use the Ready tap button');
     } else if (settings.readyMode === 'voice') {
       r.voiceMs = 0;
@@ -306,6 +328,7 @@ function waitForReady(r) {
 
 async function startRun() {
   if (shotTest.active) stopShotTest();
+  stopRecognizer(); // stop listening for "start"
   const r = { id: ++runCounter, drill: currentDrill, phase: 'starting', shots: [] };
   run = r;
   showRunning();
@@ -375,6 +398,7 @@ function finishRun(r) {
   runs.push({ drill: r.drill.id, date: new Date().toISOString(), total, first, splits });
   save('vi-runs', runs);
   log(`Result: total ${fmt(total)} s, first ${fmt(first)} s, splits ${splits.map(fmt).join(', ')}`);
+  listenForStart(); // "start" = go again
 }
 
 function abortRun() {
@@ -395,6 +419,7 @@ const shotTest = { active: false, times: [] };
 
 async function startShotTest() {
   try { await ensureAudio(); } catch (e) { log('Audio/microphone failed: ' + e); return; }
+  stopRecognizer();
   shotTest.active = true;
   shotTest.times = [];
   $('shot-test-list').innerHTML = '';
@@ -408,6 +433,7 @@ function stopShotTest() {
   setDetector({ armed: false });
   $('btn-shot-test').textContent = 'Start shot test';
   log(`--- Shot test stopped (${shotTest.times.length} shots)`);
+  listenForStart();
 }
 
 // ---------- Sample recording (guided) ----------
@@ -415,7 +441,7 @@ const RECORDINGS = [
   {
     id: 'single', title: '1. Single shots', maxSec: 60, askShots: true,
     steps: [
-      'Stand at your normal shooting position, rifle ready, AirPods on.',
+      'Stand at your normal shooting position, rifle ready, phone where it will be during drills.',
       'Press Record, then stay still and quiet for 2 seconds.',
       'Fire 10 to 15 single shots at your target, about 2 seconds apart.',
       'Wait 2 seconds after the last shot, then press Stop.',
@@ -851,10 +877,13 @@ function openDrill(d) {
   $('drill-title').textContent = d.name;
   showScreen('drill');
   showIdle();
+  // Opening the drill is a tap: start the microphone now so the app can hear "start".
+  ensureAudio().then(listenForStart).catch((e) => log('Audio/microphone failed: ' + (e && e.message ? e.message : e)));
 }
 
 function showIdle(resetStatus = true) {
   if (resetStatus) setStatus('Press Start');
+  listenForStart();
   $('shot-count').textContent = '';
   $('result').hidden = true;
   $('btn-start').hidden = false;
